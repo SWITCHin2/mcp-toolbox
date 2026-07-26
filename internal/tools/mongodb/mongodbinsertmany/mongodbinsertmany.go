@@ -28,6 +28,7 @@ import (
 const resourceType string = "mongodb-insert-many"
 
 const paramDataKey = "data"
+const collectionKey = "collection"
 
 func init() {
 	if !tools.Register(resourceType, newConfig) {
@@ -53,7 +54,7 @@ type Config struct {
 	Type             string                 `yaml:"type" validate:"required"`
 	Source           string                 `yaml:"source" validate:"required"`
 	Database         string                 `yaml:"database" validate:"required"`
-	Collection       string                 `yaml:"collection" validate:"required"`
+	Collection       string                 `yaml:"collection"`
 	Canonical        bool                   `yaml:"canonical"`
 	Annotations      *tools.ToolAnnotations `yaml:"annotations,omitempty"`
 }
@@ -73,6 +74,13 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 	dataParam := parameters.NewStringParameter(paramDataKey, "the JSON payload to insert, should be a JSON array of documents", parameters.WithStringRequired(true))
 
 	allParameters := parameters.Parameters{dataParam}
+
+	// If no collection is set in the config, expose it as a runtime parameter so
+	// the agent can pick the collection when invoking the tool.
+	if cfg.Collection == "" {
+		collectionParam := parameters.NewStringParameter(collectionKey, "The name of the collection to operate on.", parameters.WithStringRequired(true))
+		allParameters = append(allParameters, collectionParam)
+	}
 
 	paramManifest := allParameters.Manifest()
 	if paramManifest == nil {
@@ -116,7 +124,17 @@ func (t Tool) Invoke(ctx context.Context, primitiveMgr tools.SourceProvider, par
 	if !ok {
 		return nil, util.NewAgentError("no input found or invalid type for data", nil)
 	}
-	resp, err := source.InsertMany(ctx, jsonData, t.Cfg.Canonical, t.Cfg.Database, t.Cfg.Collection)
+
+	collection := t.Cfg.Collection
+	if collection == "" {
+		c, ok := paramsMap[collectionKey].(string)
+		if !ok || c == "" {
+			return nil, util.NewAgentError("collection must be set in the tool config or provided as a parameter", nil)
+		}
+		collection = c
+	}
+
+	resp, err := source.InsertMany(ctx, jsonData, t.Cfg.Canonical, t.Cfg.Database, collection)
 	if err != nil {
 		return nil, util.ProcessGeneralError(err)
 	}

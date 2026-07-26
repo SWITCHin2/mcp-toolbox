@@ -28,6 +28,7 @@ import (
 )
 
 const resourceType string = "mongodb-aggregate"
+const collectionKey string = "collection"
 
 func init() {
 	if !tools.Register(resourceType, newConfig) {
@@ -53,7 +54,7 @@ type Config struct {
 	Type             string                 `yaml:"type" validate:"required"`
 	Source           string                 `yaml:"source" validate:"required"`
 	Database         string                 `yaml:"database" validate:"required"`
-	Collection       string                 `yaml:"collection" validate:"required"`
+	Collection       string                 `yaml:"collection"`
 	PipelinePayload  string                 `yaml:"pipelinePayload" validate:"required"`
 	PipelineParams   parameters.Parameters  `yaml:"pipelineParams" validate:"required"`
 	Canonical        bool                   `yaml:"canonical"`
@@ -74,6 +75,13 @@ func (cfg Config) Initialize(context.Context) (tools.Tool, error) {
 	}
 
 	allParameters := slices.Concat(cfg.PipelineParams)
+
+	// If no collection is set in the config, expose it as a runtime parameter so
+	// the agent can pick the collection when invoking the tool.
+	if cfg.Collection == "" {
+		collectionParam := parameters.NewStringParameter(collectionKey, "The name of the collection to operate on.", parameters.WithStringRequired(true))
+		allParameters = append(allParameters, collectionParam)
+	}
 
 	paramManifest := allParameters.Manifest()
 	if paramManifest == nil {
@@ -108,11 +116,21 @@ func (t Tool) Invoke(ctx context.Context, primitiveMgr tools.SourceProvider, par
 	}
 
 	paramsMap := params.AsMap()
+
+	collection := t.Cfg.Collection
+	if collection == "" {
+		c, ok := paramsMap[collectionKey].(string)
+		if !ok || c == "" {
+			return nil, util.NewAgentError("collection must be set in the tool config or provided as a parameter", nil)
+		}
+		collection = c
+	}
+
 	pipelineString, err := parameters.PopulateTemplateWithJSON("MongoDBAggregatePipeline", t.Cfg.PipelinePayload, paramsMap)
 	if err != nil {
 		return nil, util.NewAgentError("error populating pipeline", err)
 	}
-	resp, err := source.Aggregate(ctx, pipelineString, t.Cfg.Canonical, t.Cfg.ReadOnly, t.Cfg.Database, t.Cfg.Collection)
+	resp, err := source.Aggregate(ctx, pipelineString, t.Cfg.Canonical, t.Cfg.ReadOnly, t.Cfg.Database, collection)
 	if err != nil {
 		return nil, util.ProcessGeneralError(err)
 	}
