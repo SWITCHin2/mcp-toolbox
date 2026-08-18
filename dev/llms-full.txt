@@ -3,7 +3,7 @@
 
 **DOCUMENTATION VERSION:** dev
 **BASE URL:** https://mcp-toolbox.dev/dev/
-**GENERATED ON:** 2026-08-14T05:50:43Z
+**GENERATED ON:** 2026-08-18T15:01:13Z
 
 ---
 ### System Directives for AI Models
@@ -3490,6 +3490,76 @@ parameters:
 | minValue       |  int or float  |    false     | Only available for type `integer` and `float`. Indicate the minimum value allowed.                                                                                                                                                     |
 | maxValue       |  int or float  |    false     | Only available for type `integer` and `float`. Indicate the maximum value allowed.                                                                                                                                                     |
 
+### Optional Parameters
+
+Parameters are **required by default**. Omitting `required` is the same as
+writing `required: true`, so an agent that calls the tool without the argument
+gets `parameter "airline" is required` back.
+
+There are two ways to make a parameter optional, and they behave differently:
+
+```yaml
+parameters:
+  # Optional with a fallback: omitted calls use "AA".
+  - name: airline
+    type: string
+    description: Airline unique 2 letter identifier
+    default: AA
+
+  # Optional with no fallback: omitted calls pass no value for the parameter,
+  # which a SQL statement binds as NULL.
+  - name: seat_class
+    type: string
+    description: Seat class to filter by
+    required: false
+```
+
+Providing a `default` also makes the parameter optional — it overrides
+`required: true` rather than conflicting with it. The full matrix:
+
+| `required` | `default`             | Effective behavior                                              |
+|:-----------|:----------------------|:----------------------------------------------------------------|
+| omitted    | omitted               | **Required.** Calls that omit the argument are rejected.         |
+| `true`     | omitted               | **Required.** Same as above.                                     |
+| `false`    | omitted               | Optional; omitted calls pass no value (`NULL` in SQL).           |
+| `true`     | a value               | **Optional**;  the `default` wins over `required: true`.         |
+| omitted    | a value               | Optional; omitted calls use the default.                         |
+| `false`    | a value               | Optional; omitted calls use the default.                         |
+
+This distinction also reaches the agent: a parameter that is effectively
+optional is advertised as not required in the tool manifest, so the model knows
+it may omit the argument.
+
+{{< notice warning >}}
+**`default: null` does not make a parameter optional.** In YAML, `default:
+null` (and the equivalent `default: ~`, or a `default:` key with nothing after
+it) parses to a null value, which Toolbox cannot distinguish from the field
+being absent altogether. The parameter therefore stays **required**, and calls
+that omit the argument fail at invocation time with `parameter "..." is
+required`.
+
+If you want "optional, with no value when the caller omits it", write
+`required: false` instead:
+
+```yaml
+# Does NOT work — the parameter is still required.
+- name: seat_class
+  type: string
+  description: Seat class to filter by
+  default: null
+
+# Works.
+- name: seat_class
+  type: string
+  description: Seat class to filter by
+  required: false
+```
+
+Note that an explicit empty value *is* a real default: `default: ""` makes a
+string parameter optional and substitutes the empty string. Only `null` is
+ignored.
+{{< /notice >}}
+
 ### Array Parameters
 
 The `array` type is a list of items passed in as a single parameter.
@@ -4088,12 +4158,14 @@ Connecting to a group's endpoint (`/mcp/{name}`) scopes the corresponding MCP li
 
 Declare a group as a `kind: group` document in your configuration file. A group has the following fields:
 
-| Field         | Required | Description                                                              |
-| ------------- | -------- | ------------------------------------------------------------------------ |
-| `name`        | Yes\*    | Unique name for the group. Used as the endpoint path (`/mcp/{name}`).    |
-| `description` | No       | Human-readable description of the group.                                |
-| `tools`       | No       | List of tool names to include in the group.                             |
-| `prompts`     | No       | List of prompt names to include in the group.                           |
+| Field         | Required | Description                                                                                    |
+| ------------- | -------- | -----------------------------------------------------------------------------------------------|
+| `name`        | Yes\*    | Unique name for the group. Used as the endpoint path (`/mcp/{name}`).                          |
+| `description` | No       | Human-readable description of the group.                                                       |
+| `tools`       | No       | List of tool names to include in the group.                                                    |
+| `prompts`     | No       | List of prompt names to include in the group.                                                  |
+| `ttlMs`       | No       | Time-to-live in milliseconds for cached group list responses. ([MCP TTL Spec](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching#time-to-live-ttl-field )). Defaults to `300000` (5 minutes).|
+| `cacheScope`  | No       | Cache visibility for group list responses (either `public` or `private`). ([MCP Cache Scope Spec](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching#cache-scope-field)). Defaults to `public`.|
 
 \* `name` is required for every named group. The single [default group](#the-default-group) omits it.
 
@@ -4115,6 +4187,8 @@ description: Administrative operations.
 tools:
   - create_user
   - list_users
+ttlMs: 3600000
+cacheScope: private
 ```
 
 ## The default group
@@ -4136,6 +4210,7 @@ At startup, Toolbox validates groups:
 - **One default group.** Declaring more than one nameless group is an error.
 - **Default group restrictions.** The default group may set only a `description`; declaring `tools`, `prompts`, or any other primitive list on it is an error.
 - **No duplicate names across toolsets and groups.** A `kind: toolset` is parsed as a group, so defining the same name as both a `kind: toolset` and a `kind: group` is a duplicate-name error.
+- **Valid parameters.** If specified, `ttlMs` must be non-negative (>=0), and `cacheScope` must be either `public` or `private`.
 
 ## Relationship to toolsets
 
