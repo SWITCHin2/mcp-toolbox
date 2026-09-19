@@ -503,6 +503,7 @@ type ParameterMcpManifest struct {
 	Description          string                `json:"description"`
 	Items                *ParameterMcpManifest `json:"items,omitempty"`
 	Default              any                   `json:"default,omitempty"`
+	Enum                 []any                 `json:"enum,omitempty"`
 	AdditionalProperties any                   `json:"additionalProperties,omitempty"`
 }
 
@@ -610,12 +611,26 @@ func MatchStringOrRegex(input, target any) bool {
 	return re.MatchString(inputS)
 }
 
+// literalEnum returns allowedValues as a JSON Schema enum, or nil if any entry is a regex rather than a literal.
+func literalEnum(allowedValues []any) []any {
+	if len(allowedValues) == 0 {
+		return nil
+	}
+	for _, v := range allowedValues {
+		if s, ok := v.(string); ok && regexp.QuoteMeta(s) != s {
+			return nil
+		}
+	}
+	return allowedValues
+}
+
 // McpManifest returns the MCP manifest for the Parameter.
 func (p *CommonParameter) McpManifest() (ParameterMcpManifest, []string) {
 	authServiceNames := getAuthServiceNames(p.AuthServices)
 	return ParameterMcpManifest{
 		Type:        p.Type,
 		Description: p.Desc,
+		Enum:        literalEnum(p.GetAllowedValues()),
 	}, authServiceNames
 }
 
@@ -970,6 +985,7 @@ func (p *FloatParameter) McpManifest() (ParameterMcpManifest, []string) {
 	return ParameterMcpManifest{
 		Type:        "number",
 		Description: p.Desc,
+		Enum:        literalEnum(p.GetAllowedValues()),
 	}, authServiceNames
 }
 
@@ -1213,6 +1229,7 @@ func (p *ArrayParameter) McpManifest() (ParameterMcpManifest, []string) {
 		Type:        p.Type,
 		Description: p.Desc,
 		Items:       &items,
+		Enum:        literalEnum(p.GetAllowedValues()),
 	}, authServiceNames
 }
 
@@ -1435,6 +1452,7 @@ func (p *MapParameter) McpManifest() (ParameterMcpManifest, []string) {
 	return ParameterMcpManifest{
 		Type:                 "object",
 		Description:          p.Desc,
+		Enum:                 literalEnum(p.GetAllowedValues()),
 		AdditionalProperties: additionalProperties,
 	}, authServiceNames
 }
