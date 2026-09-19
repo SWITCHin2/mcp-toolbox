@@ -156,6 +156,38 @@ func TestMongoDBToolEndpoints(t *testing.T) {
 	runToolAggregateInvokeTest(t, aggregate1Want, aggregateManyWant)
 
 	runToolRuntimeCollectionInvokeTest(t, select1Want)
+
+	runToolListCollectionsInvokeTest(t)
+}
+
+// invokeToolResult posts to a tool's invoke endpoint and returns the result string.
+func invokeToolResult(t *testing.T, api, body string) string {
+	t.Helper()
+	resp, err := http.Post(api, "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("unable to send request: %s", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("response status code is not 200, got %d: %s", resp.StatusCode, string(b))
+	}
+	var parsed map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("error parsing response body: %s", err)
+	}
+	got, ok := parsed["result"].(string)
+	if !ok {
+		t.Fatalf("unable to find result in response body: %v", parsed)
+	}
+	return got
+}
+
+func runToolListCollectionsInvokeTest(t *testing.T) {
+	got := invokeToolResult(t, "http://127.0.0.1:5000/api/tool/my-list-collections-tool/invoke", `{}`)
+	if !strings.Contains(got, `"test_collection"`) {
+		t.Fatalf("expected the seeded collection in the listing, got %q", got)
+	}
 }
 
 func runToolRuntimeCollectionInvokeTest(t *testing.T, want string) {
@@ -646,6 +678,12 @@ func getMongoDBToolsConfig(sourceConfig map[string]any, toolType string) map[str
 				"database":       MongoDbDatabase,
 				"limit":          10,
 			},
+			"my-list-collections-tool": map[string]any{
+				"type":        "mongodb-list-collections",
+				"source":      "my-instance",
+				"description": "Tool to test collection discovery.",
+				"database":    MongoDbDatabase,
+			},
 			"my-runtime-collection-tool": map[string]any{
 				"type":          toolType,
 				"source":        "my-instance",
@@ -919,7 +957,15 @@ func allowedCollectionsToolsConfig(sourceConfig map[string]any, collection strin
 	}
 	return map[string]any{
 		"sources": map[string]any{"my-instance": sourceConfig},
-		"tools":   map[string]any{"my-scoped-tool": tool},
+		"tools": map[string]any{
+			"my-scoped-tool": tool,
+			"my-list-collections-tool": map[string]any{
+				"type":        "mongodb-list-collections",
+				"source":      "my-instance",
+				"description": "Tool to test scoped collection discovery.",
+				"database":    MongoDbDatabase,
+			},
+		},
 	}
 }
 
@@ -1018,6 +1064,13 @@ func TestMongoDBAllowedCollections(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("discovery returns only the allowed collections", func(t *testing.T) {
+		got := invokeToolResult(t, "http://127.0.0.1:5001/api/tool/my-list-collections-tool/invoke", `{}`)
+		if got != `["test_collection"]` {
+			t.Fatalf("expected only the allowed collection, got %q", got)
+		}
+	})
 
 	t.Run("mcp schema advertises the allowed collections as an enum", func(t *testing.T) {
 		req := `{"jsonrpc":"2.0","id":"list","method":"tools/list"}`
