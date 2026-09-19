@@ -269,6 +269,22 @@ func asArray(v any) []any {
 	return nil
 }
 
+// ListCollectionNames returns the collections in a database, restricted to the source's allowedCollections when one is set.
+func (s *Source) ListCollectionNames(ctx context.Context, database string) ([]string, error) {
+	names, err := s.MongoClient().Database(database).ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	allowed := make([]string, 0, len(names))
+	for _, n := range names {
+		if s.IsCollectionAllowed(database, n) {
+			allowed = append(allowed, n)
+		}
+	}
+	sort.Strings(allowed)
+	return allowed, nil
+}
+
 func (s *Source) Aggregate(ctx context.Context, pipelineString string, canonical, readOnly bool, database, collection string) ([]any, error) {
 	var pipeline = []bson.M{}
 	err := bson.UnmarshalExtJSON([]byte(pipelineString), canonical, &pipeline)
