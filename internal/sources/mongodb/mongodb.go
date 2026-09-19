@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 	"github.com/googleapis/mcp-toolbox/internal/sources"
@@ -52,6 +54,8 @@ type Config struct {
 	Name string `yaml:"name" validate:"required"`
 	Type string `yaml:"type" validate:"required"`
 	Uri  string `yaml:"uri" validate:"required"` // MongoDB Atlas connection URI
+	// AllowedCollections restricts every tool on this source to these "database.collection" entries.
+	AllowedCollections []string `yaml:"allowedCollections"`
 }
 
 func (r Config) SourceConfigType() string {
@@ -59,6 +63,11 @@ func (r Config) SourceConfigType() string {
 }
 
 func (r Config) Initialize(ctx context.Context, tracer trace.Tracer) (sources.Source, error) {
+	allowedCollections, err := normalizeAllowedCollections(r.AllowedCollections)
+	if err != nil {
+		return nil, err
+	}
+
 	client, err := initMongoDBClient(ctx, tracer, r.Name, r.Uri)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create MongoDB client: %w", err)
@@ -72,10 +81,30 @@ func (r Config) Initialize(ctx context.Context, tracer trace.Tracer) (sources.So
 	}
 
 	s := &Source{
-		Config: r,
-		Client: client,
+		Config:             r,
+		Client:             client,
+		AllowedCollections: allowedCollections,
 	}
 	return s, nil
+}
+
+// normalizeAllowedCollections indexes "database.collection" entries by database; a database name cannot contain a dot, so the split is on the first one.
+func normalizeAllowedCollections(entries []string) (map[string]map[string]struct{}, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[string]map[string]struct{})
+	for _, e := range entries {
+		database, collection, found := strings.Cut(e, ".")
+		if !found || database == "" || collection == "" {
+			return nil, fmt.Errorf("invalid allowedCollections entry %q, expected 'database.collection'", e)
+		}
+		if allowed[database] == nil {
+			allowed[database] = make(map[string]struct{})
+		}
+		allowed[database][collection] = struct{}{}
+	}
+	return allowed, nil
 }
 
 var _ sources.Source = &Source{}
@@ -83,6 +112,30 @@ var _ sources.Source = &Source{}
 type Source struct {
 	Config
 	Client *mongo.Client
+	// AllowedCollections maps a database name to the set of collections allowed in it; empty means unrestricted.
+	AllowedCollections map[string]map[string]struct{}
+}
+
+// IsCollectionAllowed reports whether a collection may be used by a tool on this source.
+func (s *Source) IsCollectionAllowed(database, collection string) bool {
+	if len(s.AllowedCollections) == 0 {
+		return true
+	}
+	_, ok := s.AllowedCollections[database][collection]
+	return ok
+}
+
+// MongoDBAllowedCollections returns the sorted collections allowed in a database, or nil when unrestricted.
+func (s *Source) MongoDBAllowedCollections(database string) []string {
+	if len(s.AllowedCollections) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(s.AllowedCollections[database]))
+	for c := range s.AllowedCollections[database] {
+		names = append(names, c)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (s *Source) IsReadOnly() bool {
