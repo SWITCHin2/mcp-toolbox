@@ -53,6 +53,10 @@ func (m *MockSource) MongoDBAllowedCollections(database string) []string {
 	return names
 }
 
+func (m *MockSource) ListCollectionNames(_ context.Context, database string) ([]string, error) {
+	return m.MongoDBAllowedCollections(database), nil
+}
+
 func (m *MockSource) Aggregate(context.Context, string, bool, bool, string, string) ([]any, error) {
 	return nil, nil
 }
