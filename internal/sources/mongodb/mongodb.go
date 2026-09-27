@@ -173,6 +173,102 @@ func parseData(ctx context.Context, cur *mongo.Cursor) ([]any, error) {
 	return final, err
 }
 
+// collectionRef is a collection that a pipeline stage reads from or writes to.
+type collectionRef struct {
+	database, collection string
+}
+
+// checkPipelineScope rejects a pipeline whose stages reach a collection outside allowedCollections.
+func (s *Source) checkPipelineScope(pipeline []bson.M, database string) error {
+	if len(s.AllowedCollections) == 0 {
+		return nil
+	}
+	stages := make([]any, len(pipeline))
+	for i, stage := range pipeline {
+		stages[i] = stage
+	}
+	for _, ref := range pipelineCollections(stages, database) {
+		if !s.IsCollectionAllowed(ref.database, ref.collection) {
+			return fmt.Errorf("pipeline references collection %q in database %q, which is not in the allowedCollections of this source", ref.collection, ref.database)
+		}
+	}
+	return nil
+}
+
+// pipelineCollections returns the collections referenced by $lookup, $graphLookup, $unionWith, $out, $merge and $facet stages, including nested pipelines.
+func pipelineCollections(stages []any, database string) []collectionRef {
+	var refs []collectionRef
+	for _, stage := range stages {
+		for op, spec := range asDocument(stage) {
+			doc := asDocument(spec)
+			switch op {
+			case "$lookup", "$graphLookup":
+				refs = appendCollectionRef(refs, doc["from"], database)
+				refs = append(refs, pipelineCollections(asArray(doc["pipeline"]), database)...)
+			case "$unionWith":
+				if doc == nil {
+					refs = appendCollectionRef(refs, spec, database)
+					continue
+				}
+				refs = appendCollectionRef(refs, doc["coll"], database)
+				refs = append(refs, pipelineCollections(asArray(doc["pipeline"]), database)...)
+			case "$out":
+				refs = appendCollectionRef(refs, spec, database)
+			case "$merge":
+				if doc == nil {
+					refs = appendCollectionRef(refs, spec, database)
+					continue
+				}
+				refs = appendCollectionRef(refs, doc["into"], database)
+			case "$facet":
+				for _, sub := range doc {
+					refs = append(refs, pipelineCollections(asArray(sub), database)...)
+				}
+			}
+		}
+	}
+	return refs
+}
+
+// appendCollectionRef adds a collection given either by name or as a {db, coll} document.
+func appendCollectionRef(refs []collectionRef, v any, database string) []collectionRef {
+	if name, ok := v.(string); ok {
+		return append(refs, collectionRef{database, name})
+	}
+	doc := asDocument(v)
+	coll, _ := doc["coll"].(string)
+	if coll == "" {
+		return refs
+	}
+	if db, _ := doc["db"].(string); db != "" {
+		database = db
+	}
+	return append(refs, collectionRef{database, coll})
+}
+
+// asDocument returns v as a map, accepting the bson.M and bson.D forms that extended JSON decodes into.
+func asDocument(v any) map[string]any {
+	switch d := v.(type) {
+	case bson.M:
+		return d
+	case bson.D:
+		m := make(map[string]any, len(d))
+		for _, e := range d {
+			m[e.Key] = e.Value
+		}
+		return m
+	}
+	return nil
+}
+
+// asArray returns v as a slice, accepting the bson.A form that extended JSON decodes into.
+func asArray(v any) []any {
+	if a, ok := v.(bson.A); ok {
+		return a
+	}
+	return nil
+}
+
 func (s *Source) Aggregate(ctx context.Context, pipelineString string, canonical, readOnly bool, database, collection string) ([]any, error) {
 	var pipeline = []bson.M{}
 	err := bson.UnmarshalExtJSON([]byte(pipelineString), canonical, &pipeline)
@@ -189,6 +285,10 @@ func (s *Source) Aggregate(ctx context.Context, pipelineString string, canonical
 				}
 			}
 		}
+	}
+
+	if err := s.checkPipelineScope(pipeline, database); err != nil {
+		return nil, err
 	}
 
 	cur, err := s.MongoClient().Database(database).Collection(collection).Aggregate(ctx, pipeline)

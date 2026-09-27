@@ -80,3 +80,8 @@ A configuration that can never resolve to an allowed collection fails when the
 server starts rather than when the agent calls the tool. At invocation time the
 collection is checked again against the source, so the `enum` is a hint to the
 client and the source remains the guard.
+
+An aggregation pipeline can reach collections other than the one it runs on, so
+every collection named by a `$lookup`, `$graphLookup`, `$unionWith`, `$out`,
+`$merge` or `$facet` stage, including nested pipelines, must also be allowed by
+the source.
