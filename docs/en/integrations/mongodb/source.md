@@ -63,7 +63,10 @@ name cannot contain a dot, so the name is split on the first one.
 A tool's own `collectionAllowedValues` is an optional second layer that can only
 *narrow* the source's list; it can never widen it. The effective set is the
 intersection of the two, and it is advertised to the agent as the JSON Schema
-`enum` of the runtime `collection` parameter.
+`enum` of the runtime `collection` parameter. When the source sets
+`allowedCollections`, each `collectionAllowedValues` entry must match a whole
+collection name: `orders` selects only `orders`, not `orders_confidential`, and
+a regex such as `order_[0-9]+` is matched as `^(?:order_[0-9]+)$`.
 
 | `source.allowedCollections` | tool config                                   | behaviour                                          |
 |-----------------------------|-----------------------------------------------|----------------------------------------------------|
@@ -78,10 +81,12 @@ intersection of the two, and it is advertised to the agent as the JSON Schema
 
 A configuration that can never resolve to an allowed collection fails when the
 server starts rather than when the agent calls the tool. At invocation time the
-collection is checked again against the source, so the `enum` is a hint to the
-client and the source remains the guard.
+collection is checked again against the effective set, so the `enum` is a hint
+to the client and the server remains the guard.
 
 An aggregation pipeline can reach collections other than the one it runs on, so
 every collection named by a `$lookup`, `$graphLookup`, `$unionWith`, `$out`,
 `$merge` or `$facet` stage, including nested pipelines, must also be allowed by
-the source.
+the source. A pipeline that cannot be checked with certainty is rejected, for
+example a stage document with a repeated field such as two `from` keys, or a
+collection reference that is neither a name nor a `{db, coll}` document.
