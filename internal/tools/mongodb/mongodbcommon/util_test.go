@@ -16,6 +16,7 @@ package mongodbcommon_test
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -145,6 +146,9 @@ func TestEffectiveCollections(t *testing.T) {
 		{"disjoint", []string{"a", "b"}, []string{"c"}, []string{}},
 		{"source allows nothing in this database", []string{}, []string{"a"}, []string{}},
 		{"tool regex narrows source", []string{"customers", "order_1", "order_2"}, []string{"^order_.*$"}, []string{"order_1", "order_2"}},
+		{"literal does not admit a longer name", []string{"orders", "orders_confidential"}, []string{"orders"}, []string{"orders"}},
+		{"literal does not admit a name that contains it", []string{"orders", "old_orders"}, []string{"orders"}, []string{"orders"}},
+		{"unanchored regex matches the whole name", []string{"order_1", "order_1_confidential"}, []string{"order_[0-9]"}, []string{"order_1"}},
 	}
 	for _, tc := range tcs {
 		t.Run(tc.desc, func(t *testing.T) {
@@ -187,6 +191,46 @@ func TestValidateCollectionScope(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("expected no error, got: %s", err)
+			}
+		})
+	}
+}
+
+func TestCheckCollectionAllowed(t *testing.T) {
+	unrestricted := fakeSource{}
+	scoped := fakeSource{allowed: map[string]map[string]struct{}{
+		"shop": {"orders": {}, "orders_confidential": {}, "customers": {}},
+	}}
+
+	tcs := []struct {
+		desc        string
+		src         mongodbcommon.CollectionScopedSource
+		collection  string
+		toolAllowed []string
+		wantErr     bool
+		wantInMsg   string
+	}{
+		{"unrestricted source", unrestricted, "anything", nil, false, ""},
+		{"collection allowed by the source", scoped, "customers", nil, false, ""},
+		{"collection outside the source", scoped, "payment_cards", nil, true, "[customers orders orders_confidential]"},
+		{"collection inside the tool narrowing", scoped, "orders", []string{"orders"}, false, ""},
+		{"source collection outside the tool narrowing", scoped, "orders_confidential", []string{"orders"}, true, "are [orders]"},
+		{"error lists the effective set, not the source set", scoped, "customers", []string{"orders"}, true, "are [orders]"},
+	}
+	for _, tc := range tcs {
+		t.Run(tc.desc, func(t *testing.T) {
+			err := mongodbcommon.CheckCollectionAllowed(tc.src, "shop", tc.collection, tc.toolAllowed)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("expected no error, got: %s", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantInMsg) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantInMsg)
 			}
 		})
 	}

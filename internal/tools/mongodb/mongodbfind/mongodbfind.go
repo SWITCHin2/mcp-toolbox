@@ -206,8 +206,8 @@ func (t Tool) Invoke(ctx context.Context, s sources.Source, params parameters.Pa
 	if tbErr != nil {
 		return nil, tbErr
 	}
-	if !source.IsCollectionAllowed(t.Cfg.Database, collection) {
-		return nil, util.NewAgentError(fmt.Sprintf("collection %q is not allowed on this source; allowed collections in database %q are %v", collection, t.Cfg.Database, source.MongoDBAllowedCollections(t.Cfg.Database)), nil)
+	if tbErr := mongodbcommon.CheckCollectionAllowed(source, t.Cfg.Database, collection, t.Cfg.CollectionAllowedValues); tbErr != nil {
+		return nil, tbErr
 	}
 
 	filterString, err := parameters.PopulateTemplateWithJSON("MongoDBFindFilterString", t.Cfg.FilterPayload, paramsMap)

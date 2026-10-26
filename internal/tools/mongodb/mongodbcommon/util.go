@@ -17,6 +17,7 @@ package mongodbcommon
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 
 	"github.com/googleapis/mcp-toolbox/internal/util"
@@ -85,13 +86,43 @@ func EffectiveCollections(sourceAllowed, toolAllowed []string) []string {
 	effective := make([]string, 0, len(sourceAllowed))
 	for _, c := range sourceAllowed {
 		for _, pattern := range toolAllowed {
-			if parameters.MatchStringOrRegex(c, pattern) {
+			if matchesCollection(c, pattern) {
 				effective = append(effective, c)
 				break
 			}
 		}
 	}
 	return effective
+}
+
+// matchesCollection reports whether a collection name matches a collectionAllowedValues entry. Unlike the shared
+// allowedValues match, it is anchored: a literal entry must equal the name and a regex entry must match all of it,
+// so "orders" does not admit "orders_confidential". This follows the exact matching of the other source allow-lists.
+func matchesCollection(name, pattern string) bool {
+	if regexp.QuoteMeta(pattern) == pattern {
+		return name == pattern
+	}
+	re, err := regexp.Compile("^(?:" + pattern + ")$")
+	if err != nil {
+		return name == pattern
+	}
+	return re.MatchString(name)
+}
+
+// CheckCollectionAllowed rejects a collection outside the effective set (the source's allowedCollections narrowed by
+// the tool's collectionAllowedValues) and lists that set in the error so the agent can retry. It matches names
+// exactly because the runtime parameter's allowedValues check is unanchored and would let "orders_confidential"
+// through an effective set of "orders".
+func CheckCollectionAllowed(src CollectionScopedSource, database, collection string, toolAllowed []string) util.ToolboxError {
+	sourceAllowed := src.MongoDBAllowedCollections(database)
+	if sourceAllowed == nil {
+		return nil
+	}
+	effective := EffectiveCollections(sourceAllowed, toolAllowed)
+	if slices.Contains(effective, collection) {
+		return nil
+	}
+	return util.NewAgentError(fmt.Sprintf("collection %q is not allowed for this tool; allowed collections in database %q are %v", collection, database, effective), nil)
 }
 
 // ValidateCollectionScope checks a tool's collection config against the source's allow-list so a bad config fails at startup.
