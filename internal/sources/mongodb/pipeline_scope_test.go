@@ -49,6 +49,16 @@ func TestCheckPipelineScope(t *testing.T) {
 		{"merge into a disallowed collection", scoped, `[{"$merge": {"into": "secrets"}}]`, true},
 		{"merge into another database", scoped, `[{"$merge": {"into": {"db": "other", "coll": "orders"}}}]`, true},
 		{"facet with a disallowed lookup", scoped, `[{"$facet": {"a": [{"$match": {}}], "b": [{"$lookup": {"from": "secrets", "as": "d", "pipeline": []}}]}}]`, true},
+		{"lookup with a $documents pipeline and no from", scoped, `[{"$lookup": {"as": "d", "pipeline": [{"$documents": [{"x": 1}]}]}}]`, false},
+		{"lookup hiding a disallowed from behind a duplicate key", scoped, `[{"$lookup": {"from": "secrets", "from": "customers", "localField": "a", "foreignField": "b", "as": "c"}}]`, true},
+		{"lookup hiding a disallowed from behind a duplicate key, reversed", scoped, `[{"$lookup": {"from": "customers", "from": "secrets", "localField": "a", "foreignField": "b", "as": "c"}}]`, true},
+		{"duplicate key in a nested lookup", scoped, `[{"$lookup": {"from": "customers", "as": "c", "pipeline": [{"$lookup": {"from": "secrets", "from": "orders", "as": "d", "pipeline": []}}]}}]`, true},
+		{"duplicate key in a {db, coll} reference", scoped, `[{"$out": {"db": "other", "db": "archive", "coll": "orders"}}]`, true},
+		{"lookup from that is neither a name nor a document", scoped, `[{"$lookup": {"from": 1, "localField": "a", "foreignField": "b", "as": "c"}}]`, true},
+		{"lookup pipeline that is not an array", scoped, `[{"$lookup": {"from": "customers", "as": "c", "pipeline": {"$match": {}}}}]`, true},
+		{"out document without coll", scoped, `[{"$out": {"db": "archive"}}]`, true},
+		{"merge document without into", scoped, `[{"$merge": {"on": "_id"}}]`, true},
+		{"facet with a sub-pipeline that is not an array", scoped, `[{"$facet": {"a": {"$match": {}}}}]`, true},
 	}
 	for _, tc := range tcs {
 		t.Run(tc.desc, func(t *testing.T) {

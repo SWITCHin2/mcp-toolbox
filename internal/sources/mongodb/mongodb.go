@@ -187,7 +187,11 @@ func (s *Source) checkPipelineScope(pipeline []bson.M, database string) error {
 	for i, stage := range pipeline {
 		stages[i] = stage
 	}
-	for _, ref := range pipelineCollections(stages, database) {
+	refs, err := pipelineCollections(stages, database)
+	if err != nil {
+		return err
+	}
+	for _, ref := range refs {
 		if !s.IsCollectionAllowed(ref.database, ref.collection) {
 			return fmt.Errorf("pipeline references collection %q in database %q, which is not in the allowedCollections of this source", ref.collection, ref.database)
 		}
@@ -196,77 +200,145 @@ func (s *Source) checkPipelineScope(pipeline []bson.M, database string) error {
 }
 
 // pipelineCollections returns the collections referenced by $lookup, $graphLookup, $unionWith, $out, $merge and $facet stages, including nested pipelines.
-func pipelineCollections(stages []any, database string) []collectionRef {
+// It fails closed: a stage it cannot read with certainty is an error, never a stage with no references.
+func pipelineCollections(stages []any, database string) ([]collectionRef, error) {
 	var refs []collectionRef
 	for _, stage := range stages {
-		for op, spec := range asDocument(stage) {
-			doc := asDocument(spec)
+		stageDoc, err := asDocument(stage)
+		if err != nil {
+			return nil, err
+		}
+		for op, spec := range stageDoc {
+			var opRefs []collectionRef
 			switch op {
 			case "$lookup", "$graphLookup":
-				refs = appendCollectionRef(refs, doc["from"], database)
-				refs = append(refs, pipelineCollections(asArray(doc["pipeline"]), database)...)
+				opRefs, err = subPipelineCollections(spec, "from", database)
 			case "$unionWith":
-				if doc == nil {
-					refs = appendCollectionRef(refs, spec, database)
-					continue
+				if _, ok := spec.(string); ok {
+					opRefs, err = appendCollectionRef(nil, spec, database)
+				} else {
+					opRefs, err = subPipelineCollections(spec, "coll", database)
 				}
-				refs = appendCollectionRef(refs, doc["coll"], database)
-				refs = append(refs, pipelineCollections(asArray(doc["pipeline"]), database)...)
 			case "$out":
-				refs = appendCollectionRef(refs, spec, database)
+				opRefs, err = appendCollectionRef(nil, spec, database)
 			case "$merge":
-				if doc == nil {
-					refs = appendCollectionRef(refs, spec, database)
-					continue
+				if _, ok := spec.(string); ok {
+					opRefs, err = appendCollectionRef(nil, spec, database)
+				} else {
+					var doc map[string]any
+					if doc, err = asDocument(spec); err == nil {
+						opRefs, err = appendCollectionRef(nil, doc["into"], database)
+					}
 				}
-				refs = appendCollectionRef(refs, doc["into"], database)
 			case "$facet":
-				for _, sub := range doc {
-					refs = append(refs, pipelineCollections(asArray(sub), database)...)
-				}
+				opRefs, err = facetCollections(spec, database)
 			}
+			if err != nil {
+				return nil, fmt.Errorf("unable to check %s stage against allowedCollections: %w", op, err)
+			}
+			refs = append(refs, opRefs...)
 		}
 	}
-	return refs
+	return refs, nil
+}
+
+// subPipelineCollections returns the collection named by key in a $lookup, $graphLookup or $unionWith spec, plus those
+// reached by its sub-pipeline. The key is optional because a sub-pipeline that starts with $documents names no collection.
+func subPipelineCollections(spec any, key, database string) ([]collectionRef, error) {
+	doc, err := asDocument(spec)
+	if err != nil {
+		return nil, err
+	}
+	var refs []collectionRef
+	if v, ok := doc[key]; ok {
+		if refs, err = appendCollectionRef(refs, v, database); err != nil {
+			return nil, err
+		}
+	}
+	if v, ok := doc["pipeline"]; ok {
+		stages, err := asArray(v)
+		if err != nil {
+			return nil, err
+		}
+		sub, err := pipelineCollections(stages, database)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, sub...)
+	}
+	return refs, nil
+}
+
+// facetCollections returns the collections reached by each sub-pipeline of a $facet stage.
+func facetCollections(spec any, database string) ([]collectionRef, error) {
+	doc, err := asDocument(spec)
+	if err != nil {
+		return nil, err
+	}
+	var refs []collectionRef
+	for _, v := range doc {
+		stages, err := asArray(v)
+		if err != nil {
+			return nil, err
+		}
+		sub, err := pipelineCollections(stages, database)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, sub...)
+	}
+	return refs, nil
 }
 
 // appendCollectionRef adds a collection given either by name or as a {db, coll} document.
-func appendCollectionRef(refs []collectionRef, v any, database string) []collectionRef {
+func appendCollectionRef(refs []collectionRef, v any, database string) ([]collectionRef, error) {
 	if name, ok := v.(string); ok {
-		return append(refs, collectionRef{database, name})
+		return append(refs, collectionRef{database, name}), nil
 	}
-	doc := asDocument(v)
-	coll, _ := doc["coll"].(string)
-	if coll == "" {
-		return refs
+	doc, err := asDocument(v)
+	if err != nil {
+		return nil, err
 	}
-	if db, _ := doc["db"].(string); db != "" {
-		database = db
+	coll, ok := doc["coll"].(string)
+	if !ok || coll == "" {
+		return nil, fmt.Errorf("expected a collection name or a {db, coll} document")
 	}
-	return append(refs, collectionRef{database, coll})
+	if db, ok := doc["db"]; ok {
+		dbName, isString := db.(string)
+		if !isString || dbName == "" {
+			return nil, fmt.Errorf("expected 'db' to be a database name")
+		}
+		database = dbName
+	}
+	return append(refs, collectionRef{database, coll}), nil
 }
 
 // asDocument returns v as a map, accepting the bson.M and bson.D forms that extended JSON decodes into.
-func asDocument(v any) map[string]any {
+// A bson.D with a repeated key is rejected: the map would keep only one value, while the server receives
+// the original bson.D, so the scope check and the executed pipeline could see different collections.
+func asDocument(v any) (map[string]any, error) {
 	switch d := v.(type) {
 	case bson.M:
-		return d
+		return d, nil
 	case bson.D:
 		m := make(map[string]any, len(d))
 		for _, e := range d {
+			if _, dup := m[e.Key]; dup {
+				return nil, fmt.Errorf("duplicate field %q", e.Key)
+			}
 			m[e.Key] = e.Value
 		}
-		return m
+		return m, nil
 	}
-	return nil
+	return nil, fmt.Errorf("expected a document, got %T", v)
 }
 
 // asArray returns v as a slice, accepting the bson.A form that extended JSON decodes into.
-func asArray(v any) []any {
+func asArray(v any) ([]any, error) {
 	if a, ok := v.(bson.A); ok {
-		return a
+		return a, nil
 	}
-	return nil
+	return nil, fmt.Errorf("expected an array, got %T", v)
 }
 
 func (s *Source) Aggregate(ctx context.Context, pipelineString string, canonical, readOnly bool, database, collection string) ([]any, error) {
