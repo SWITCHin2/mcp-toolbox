@@ -611,10 +611,12 @@ func MatchStringOrRegex(input, target any) bool {
 	return re.MatchString(inputS)
 }
 
-// literalEnum returns allowedValues as a JSON Schema enum, or nil unless every entry is a literal string.
-// Regex entries cannot be expressed as an enum, and some LLM function-calling schemas only accept string enums.
-func literalEnum(allowedValues []any) []any {
-	if len(allowedValues) == 0 {
+// literalEnum returns allowedValues as a JSON Schema enum, or nil unless the parameter is a string and every entry
+// is a literal string. Regex entries cannot be expressed as an enum, and some LLM function-calling schemas only accept
+// string enums. Other types are skipped because their allowedValues may be strings, e.g. ["10", "25"] on an integer,
+// which would advertise an enum that contradicts the parameter's type.
+func literalEnum(paramType string, allowedValues []any) []any {
+	if paramType != TypeString || len(allowedValues) == 0 {
 		return nil
 	}
 	for _, v := range allowedValues {
@@ -632,7 +634,7 @@ func (p *CommonParameter) McpManifest() (ParameterMcpManifest, []string) {
 	return ParameterMcpManifest{
 		Type:        p.Type,
 		Description: p.Desc,
-		Enum:        literalEnum(p.GetAllowedValues()),
+		Enum:        literalEnum(p.Type, p.GetAllowedValues()),
 	}, authServiceNames
 }
 

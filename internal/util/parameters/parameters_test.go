@@ -1919,6 +1919,12 @@ func TestParamMcpManifest(t *testing.T) {
 			wantAuthParam: []string{},
 		},
 		{
+			name:          "int with string allowedValues omits enum",
+			in:            parameters.NewIntParameter("foo-int", "bar", parameters.WithIntAllowedValues([]any{"10", "25", "50"})),
+			want:          parameters.ParameterMcpManifest{Type: "integer", Description: "bar"},
+			wantAuthParam: []string{},
+		},
+		{
 			name:          "float with allowedValues omits enum",
 			in:            parameters.NewFloatParameter("foo-float", "bar", parameters.WithFloatAllowedValues([]any{1.5, 2.5})),
 			want:          parameters.ParameterMcpManifest{Type: "number", Description: "bar"},
@@ -1927,6 +1933,12 @@ func TestParamMcpManifest(t *testing.T) {
 		{
 			name:          "boolean with allowedValues omits enum",
 			in:            parameters.NewBooleanParameter("foo-bool", "bar", parameters.WithBooleanAllowedValues([]any{true})),
+			want:          parameters.ParameterMcpManifest{Type: "boolean", Description: "bar"},
+			wantAuthParam: []string{},
+		},
+		{
+			name:          "boolean with string allowedValues omits enum",
+			in:            parameters.NewBooleanParameter("foo-bool", "bar", parameters.WithBooleanAllowedValues([]any{"true"})),
 			want:          parameters.ParameterMcpManifest{Type: "boolean", Description: "bar"},
 			wantAuthParam: []string{},
 		},
